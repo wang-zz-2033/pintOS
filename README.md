@@ -16,7 +16,8 @@ pintos Project 2 -- User Program
 
 参考：https://wenku.baidu.com/view/eed6bbdaa48da0116c175f0e7cd184254b351ba8.html
 （只有这个能看了）
-（书签：p7 p22）
+（书签：p7 p23）
+接着写void Iopen()
 
 待解决的问题：
 userprog/syscall.c 第203行 struct thread在哪里定义过 （也就是需要理解为什么205行是cur->'RET'）
