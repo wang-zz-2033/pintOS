@@ -35,7 +35,8 @@ process_execute (const char *file_name)
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). 
      传递文件名 need复制
-     别忘了现在在                分离参数             */
+     别忘了现在在                分离参数             
+     听说需要小心传入空指针   */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
@@ -111,7 +112,7 @@ start_process (void *file_name_)
   *p-- = n;
   *p-- = 0;
   esp = p+1;
-  //用户栈指针指向新栈顶
+  //用户栈指针指向新栈顶 
   if_.esp = esp;
   palloc_free_page(file_name);
 
