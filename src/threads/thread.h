@@ -82,7 +82,7 @@ typedef int tid_t;
    blocked state is on a semaphore wait list. */
 struct thread
   {
-    /* Owned by thread.c. */
+    /* Owned by thread.c. 被修改*/
     tid_t tid;                          /* Thread identifier. */
     enum thread_status status;          /* Thread state. */
     char name[16];                      /* Name (for debugging purposes). */
@@ -96,6 +96,11 @@ struct thread
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    tid_t parent_id;                   /* parent pid (tid) */
+    struct list children;             /* child processes */
+    struct list fd_list;            /* List of all file_descriptor it owns*/
+    int exit_status;
+    struct file *executable;     /* The thread's executable*/
 #endif
 
     /* Owned by thread.c. */

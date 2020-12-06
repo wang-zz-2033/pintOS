@@ -8,11 +8,14 @@
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
+#include "userprog/syscall.h"      //new
 #include "filesys/directory.h"
 #include "filesys/file.h"
 #include "filesys/filesys.h"
 #include "threads/flags.h"
 #include "threads/init.h"
+#include "threads/synch.h"        //new
+#include "threads/malloc.h"       //new
 #include "threads/interrupt.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
@@ -20,6 +23,33 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+
+char* extract_command(char* command,char* argv[],int* argc);
+
+/*
+the list save all elem ready to read
+*/
+static struct list read_list;
+/**
+the list to save all read request
+*/
+static struct list wait_list;
+
+struct read_elem{
+  int pid;
+  enum action action;
+  struct list_elem elem;
+  int value;
+};
+
+struct wait_elem{
+  int pid;
+  enum action action;
+  struct list_elem elem;
+  struct semaphore sema;
+};
+
+//start copy from line 53
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -127,13 +157,16 @@ start_process (void *file_name_)
   NOT_REACHED ();
 }
 
-/* Waits for thread TID to die and returns its exit status.  If
-   it was terminated by the kernel (i.e. killed due to an
-   exception), returns -1.  If TID is invalid or if it was not a
+/* Waits for thread TID to die and returns its exit status.  
+  等待子进程结束，并返回其退出状态
+   If it was terminated by the kernel (i.e. killed due to an
+   exception), returns -1. 
+   被内核终止就返回- 1
+    If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
    immediately, without waiting.
-
+  如果TID非法 or 他不是调用体的孩子 or process_wait()已被成功执行，立即返回-1，不等待
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
