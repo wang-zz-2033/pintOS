@@ -49,7 +49,87 @@ struct wait_elem{
   struct semaphore sema;
 };
 
-//start copy from line 53
+void pipe_init(){
+  list_init(&read_list);
+  list_init(&wait_list);
+}
+
+/*
+add an elem to read list
+*/
+void write_pipe(int pid,enum action action,int value){
+  enum intr_level old_level = intr_disable ();
+  // printf("%d write pipe %d, %d, %d\n",thread_tid(),pid, action, value);
+  /*
+  create a elem in read_list
+  */
+  struct read_elem* read = malloc(sizeof(struct read_elem));
+  read->pid = pid;
+  read->action = action;
+  read->value = value;
+  list_push_back(&read_list,&read->elem);
+
+  /*
+  wake up the read request if necessary
+  */
+  struct list_elem *e;
+  for(e=list_begin(&wait_list);e!=list_end(&wait_list);e=list_next(e)){
+    struct wait_elem *we = list_entry(e,struct wait_elem,elem);
+    if(we->pid == pid && we->action == action)
+      sema_up(&we->sema);
+  }
+  intr_set_level(old_level);
+}
+
+
+
+/*
+read the value in read list.
+create a read request if what the request want is not in read_list yet.
+*/
+int read_pipe(int pid,enum action action){
+  enum intr_level old_level = intr_disable ();
+  // printf("%d read pipe %d, %d\n",thread_tid(),pid, action);
+  for(;;){
+    /*
+    check if what reader want already ready
+    */
+  struct list_elem *e;
+  for(e = list_begin(&read_list); e != list_end(&read_list); e = list_next(e) ){
+    struct read_elem *re = list_entry(e,struct read_elem, elem);
+    if(re->pid == pid && re->action == action){
+      list_remove(e);
+      int value = re->value;
+      free(re);
+      return value;
+    }
+    intr_set_level(old_level);
+  }
+  /*
+  what reader want is not in read_list, create a wait request
+  */
+  struct wait_elem *we = malloc(sizeof(struct wait_elem));
+  sema_init(&we->sema,0);
+  we->pid = pid;
+  we->action = action;
+  list_push_back(&wait_list,&we->elem);
+  sema_down(&we->sema);
+  /*
+  a writer has write something this reader want, the reader was unblocked and
+  clean the request and go to beginning
+  */
+  list_remove(&we->elem);
+  free(we);
+}
+}
+
+// call at init.c
+void process_init(){
+  pipe_init();
+  // init root process
+  list_init(&thread_current()->children);  //#ifdef USERPROG
+}
+
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -72,14 +152,53 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  char *realname,save_ptr;
-  realname = strtok_r(file_name," ",&save_ptr);
-  //strtok_r (char *s, const char *delimiters, char **save_ptr) 
+  // char *realname,save_ptr;
+  // realname = strtok_r(file_name," ",&save_ptr);
+  // //strtok_r (char *s, const char *delimiters, char **save_ptr) 
 
-  /* Create a new thread to execute FILE_NAME. 这里传的是realname，也就是文件名*/
-  tid = thread_create (realname, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  // /* Create a new thread to execute FILE_NAME. 这里传的是realname，也就是文件名*/
+  // tid = thread_create (realname, PRI_DEFAULT, start_process, fn_copy);
+  // if (tid == TID_ERROR)
+  //   palloc_free_page (fn_copy); 
+  // return tid;
+
+
+  /* Create a new thread to execute FILE_NAME. */
+
+  // thread name: file_name(with arguments)
+  // start_process arguments: fn_copy
+  char *argv[MAX_ARGC];
+  int argc;
+  char* command_bak = extract_command(file_name,argv,&argc);
+  // thread->name max 16
+
+  tid = thread_create (argv[0], PRI_DEFAULT, start_process, fn_copy);
+
+  tid = read_pipe(tid,EXEC);
+  if (tid == TID_ERROR){
+    palloc_free_page (fn_copy);
+    return TID_ERROR;
+  }
+
+
+
+  /*
+  add this thread to children, make shure that the thread start correctly
+  */
+  enum intr_level old_level = intr_disable ();
+  struct thread *child = get_thread_by_tid(tid);
+  child->parent_id = thread_current()->tid;
+
+
+  struct process *p = malloc(sizeof(struct process));
+  if(p==NULL){
+
+    return TID_ERROR;
+  }
+  p->thread = child->tid;
+
+  list_push_back(&thread_current()->children,&p->elem);
+  intr_set_level (old_level);
   return tid;
 }
 
@@ -92,59 +211,79 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
-  char *token = NULL,*save_ptr = NULL;
-  token = strtok_r(file_name," ",&save_ptr);
-  //和前面一样，都是提取文件名，以后传的也是文件名.“分离参数”
+  // char *token = NULL,*save_ptr = NULL;
+  // token = strtok_r(file_name," ",&save_ptr);
+  // //和前面一样，都是提取文件名，以后传的也是文件名.“分离参数”
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  success = load (token, &if_.eip, &if_.esp); //or realname 又把它换成真的文件名了
+  
+  // load name const char* Executable file name
+  char *argv[MAX_ARGC];
+  int argc;
+  char* command_bak = extract_command(file_name,argv,&argc);
+  success = load(argv[0],&if_.eip, &if_.esp);
+  //eip:下次执行指令的地址
+  //esp:栈的栈顶
+  
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  //palloc_free_page (file_name);
   if (!success){
-    thread_exit ();
+    write_pipe(thread_current()->tid,EXEC,TID_ERROR);
+    exit(-1);
   }
 
-  /*
-    用户栈指针 ESP。调用strtok_r时要把分离出来的文件名（字符串）复制到用户栈空间中，
-     栈是向下增长，字符串是向上增长
-     整个数组arg[]记录字符串在栈中的位置
-  */
-  char *esp = (char *)if_.esp;
-  char *arg[256];
-  int i,n=0;
-  for(; token != NULL ; token = strtok_r(file_name," ",&save_ptr)){
+  int id = thread_current()->tid;
+  write_pipe(id,EXEC,id);
+  //put arguments into stack;
+  int i=argc;
+  char * addr_arr[argc];
+  
+  while(--i>=0){
+    if_.esp = if_.esp - sizeof(char)*(strlen(argv[i])+1); 
 
-    esp = esp - strlen(token) - 1;
-    strlcpy(esp,token,strlen(token)+2);
-    arg[n++] = esp;
+    addr_arr[i]=(char *)if_.esp;
+    memcpy(if_.esp,argv[i],strlen(argv[i])+1);
+
 
   }
-  /*
-    加入双字对齐
-  */
-  while((int)esp%4make)
-    esp--; //栈向下增长
 
-  //把保存的指针逆序放入栈；先放一个0；再放参数n..n-1...0的地址
-  int *p = esp - 4;
-  *p--=0;
-  for(i = n-1; i>=0 ; i--){
-    *p--=(int *)arg[i];
+  // 4k  对齐
+  //world-align
+  while ((int)if_.esp%4!=0) {
+    if_.esp--;
   }
 
-  //放入argc,argv
-  *p-- = p+1;
-  *p-- = n;
-  *p-- = 0;
-  esp = p+1;
-  //用户栈指针指向新栈顶 
-  if_.esp = esp;
-  palloc_free_page(file_name);
+
+  i=argc;
+  if_.esp = if_.esp-4;
+  (*(int *)if_.esp)=0;
+  while (--i>=0) {
+
+    if_.esp = if_.esp-4;//sizeof()
+    (*(char **)if_.esp) = addr_arr[i]; // if_.esp a pointer to uint32_t*
+    
+  }
+
+  //get argv
+  if_.esp = if_.esp-4;
+  (*(char **)if_.esp)=if_.esp+4;
+
+  //get argc
+  if_.esp = if_.esp-4;
+  (*(int *)if_.esp)=argc;
+
+  //get return address
+  if_.esp = if_.esp-4;
+  (*(int *)if_.esp)=0;
+
+  /* If load failed, quit. */
+  free(command_bak);
+  palloc_free_page (file_name);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -155,6 +294,41 @@ start_process (void *file_name_)
       */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
   NOT_REACHED ();
+}
+
+/*
+return true if tid is a child of current theread
+if delete flag is set, also remove the child
+notice that if the child is removed but it is not terminated, the
+current thread still is this process's parent. it is recoread in
+the thread's parent_id.
+*/
+bool is_child(tid_t tid,bool delete){
+  struct thread *cur = thread_current();
+  struct list_elem *e;
+
+  for(e = list_begin(&cur->children); e != list_end(&cur->children);e = list_next(e)){
+    // TODO: thread was freed!
+    // struct thread *t = list_entry(e,struct process,elem)->thread;
+    int child_tid = list_entry(e,struct process,elem)->thread;
+    // printf("%d has children %d\n",thread_tid(),child_tid);
+    if(tid == child_tid){
+      if(delete){
+        list_remove(e);
+        free(list_entry(e,struct process,elem));
+      }
+      return true;
+    }
+  }
+  return false;
+}
+/*
+return true if current can wait this process
+*/
+bool can_wait(tid_t tid){
+  
+  return is_child(tid,true);
+  
 }
 
 /* Waits for thread TID to die and returns its exit status.  
@@ -170,9 +344,53 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
-  return -1;
+  if(!can_wait(child_tid)){
+    return -1;
+  }
+  return read_pipe(child_tid,WAIT);
+}
+
+
+/*
+remove all signals write by current thread
+*/
+void remove_child_signal(){
+  struct list_elem *e;
+  for(e = list_begin(&read_list);e != list_end(&read_list); e = list_next(e)){
+    struct read_elem *re = list_entry(e,struct read_elem, elem);
+    if(is_child(re->pid,false)){
+        list_remove(e);
+        free(re);
+    }
+  }
+}
+
+/*
+remove wait request
+*/
+void remove_wait_request(){
+  struct list_elem *e;
+  for(e = list_begin(&wait_list); e!=list_end(&wait_list);e = list_next(e)){
+    struct wait_elem *we = list_entry(e,struct wait_elem, elem);
+    if(is_child(we->pid,false)){
+      list_remove(e);
+      sema_up(&we->sema);
+      free(we);
+    }
+  }
+
+}
+
+void free_children(){
+  struct list *children = &thread_current()->children;
+  struct list_elem *e;
+
+  for(e =list_begin(children); e!=list_end(children);e = list_next(e)){
+    list_remove(e);
+    free(list_entry(e,struct process, elem));
+  }
 }
 
 /* Free the current process's resources. */
@@ -181,9 +399,16 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+  
+  //task 1 printf ("%s: exit(%d)\n", ...);
+  printf("%s: exit(%d)\n", cur->name, cur->exit_status); //您好，有的
+  write_pipe(cur->tid,WAIT,cur->exit_status); //您好，有的
+  file_close(cur->executable); //您好，有的
 
+  if(cur->tid == 1)
+    return;
   /* Destroy the current process's page directory and switch back
-     to the kernel-only page directory. */
+     to the kernel-only page directory. 关闭线程所打开的文件*/
   pd = cur->pagedir;
   if (pd != NULL) 
     {
@@ -195,8 +420,8 @@ process_exit (void)
          directory, or our active page directory will be one
          that's been freed (and cleared). */
       cur->pagedir = NULL;
-      pagedir_activate (NULL);
-      pagedir_destroy (pd);
+      pagedir_activate(NULL);
+      pagedir_destroy(pd);
     }
 }
 
@@ -396,7 +621,14 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  if(success){
+    t->executable = file;
+    file_deny_write(file);
+  }
+  else{
+    file_close (file);
+  }
+  
   return success;
 }
 
